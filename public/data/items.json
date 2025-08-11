@@ -1,0 +1,36 @@
+[
+  {
+    "id": "t-citypop-001",
+    "type": "track",
+    "title": "Plastic Love",
+    "artist_or_director": "Mariya Takeuchi",
+    "year": 1984,
+    "genres": [
+      "city_pop",
+      "jpop"
+    ],
+    "moods": [
+      "retro",
+      "groovy"
+    ],
+    "poster_url": "https://upload.wikimedia.org/wikipedia/en/4/45/Variety_%28Mariya_Takeuchi_album%29.jpg",
+    "play_url": "https://open.spotify.com/track/3Zwu2K0Qa5sT6teCCHPShP"
+  },
+  {
+    "id": "t-lofi-001",
+    "type": "track",
+    "title": "Late Night Vibes",
+    "artist_or_director": "Various",
+    "year": 2021,
+    "genres": [
+      "lofi",
+      "instrumental"
+    ],
+    "moods": [
+      "mellow",
+      "study"
+    ],
+    "poster_url": "https://dummyimage.com/400x400/111/ddd.png&text=Lo-fi",
+    "play_url": "https://music.youtube.com/"
+  }
+]

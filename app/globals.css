@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+
+html, body, #__next { height: 100%; }
+body { @apply bg-bg text-white; }
+
+/* 可選：掃描線動畫 */
+.scanline { position: relative; overflow: hidden; }
+.scanline::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: repeating-linear-gradient(
+    to bottom, rgba(255,255,255,0.04), rgba(255,255,255,0.04) 1px,
+    transparent 1px, transparent 3px
+  );
+  pointer-events: none;
+}
