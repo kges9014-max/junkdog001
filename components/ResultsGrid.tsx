@@ -1,77 +1,255 @@
 'use client';
+
 import { useEffect, useMemo, useState } from 'react';
-import { Item, Profile } from '@/lib/types';
-import { getProfile, addPick, hasPick, removePick, getPicks } from '@/lib/storage';
-import { rank } from '@/lib/scoring';
 
-export default function ResultsGrid(){
-  const [items, setItems] = useState<Item[]>([]);
-  const [profile, setProfile] = useState<Profile>({ pills:[], particles:[], decades:[] });
-  const [onlyMine, setOnlyMine] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+type Item = {
+  id: string;
+  type: 'track' | 'movie' | string;
+  title: string;
+  artist_or_director?: string;
+  year?: number;
+  genres?: string[];
+  moods?: string[];
+  poster_url?: string;
+  play_url?: string;
+};
 
-  useEffect(()=>{
-    async function load(){
-      try{
-        const res = await fetch('/data/items.json', { cache: 'no-store' });
-        if(!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-        const data = await res.json();
-        if(!Array.isArray(data)) throw new Error('items.json must be an array');
-        setItems(data);
-      }catch(err:any){
-        console.error('Failed to load items.json', err);
-        setError('讀取 /data/items.json 失敗。請確認檔案在 public/data/items.json，且 JSON 格式正確（陣列、逗號完整、字串加雙引號）。');
-        setItems([]);
-      }
-    }
-    load();
-    setProfile(getProfile());
-  },[]);
+type DecadeTag = '90s-' | '00s–10s' | '20s+';
 
-  const picks = getPicks();
-  const ranked = useMemo(()=>rank(items, profile), [items, profile]);
-  const list = onlyMine ? ranked.filter(i=>picks.includes(i.id)) : ranked.slice(0,12);
+const PROFILE_KEY = 'pg_profile';
+const PICKS_KEY = 'pg_picks';
 
-  return (
-    <div className="max-w-6xl mx-auto p-4">
-      {error && (
-        <div className="mb-4 p-3 rounded border border-red-500/40 bg-red-500/10 text-sm">
-          {error}
-        </div>
-      )}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex gap-2">
-          {profile.pills.map(p=> <span key={p} className="px-2 py-1 text-xs rounded border border-white/20">{p}</span>)}
-          {!!profile.decades.length && <span className="px-2 py-1 text-xs rounded border border-white/20">{profile.decades.join(',')}</span>}
-        </div>
-        <label className="text-xs flex items-center gap-2 opacity-80">
-          <input type="checkbox" checked={onlyMine} onChange={e=>setOnlyMine(e.target.checked)} />
-          only my picks
-        </label>
-      </div>
+// ---- decade mapping（三段）----
+const toDecade = (year?: number): DecadeTag => {
+  if (!year) return '90s-';
+  if (year >= 2020) return '20s+';
+  if (year >= 2000) return '00s–10s';
+  return '90s-';
+};
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-        {list.map(it=> <Card key={it.id} item={it}/>) }
-      </div>
-    </div>
+// ---- 可重現的洗牌（seeded shuffle）----
+function shuffleWithSeed<T>(arr: T[], seed: number) {
+  const a = arr.slice();
+  let s = seed || 1;
+  for (let i = a.length - 1; i > 0; i--) {
+    s = (s * 9301 + 49297) % 233280;
+    const r = s / 233280;
+    const j = Math.floor(r * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// ---- 讀／寫 picks ----
+function loadPicks(): string[] {
+  try {
+    return JSON.parse(localStorage.getItem(PICKS_KEY) || '[]');
+  } catch {
+    return [];
+  }
+}
+function savePicks(ids: string[]) {
+  localStorage.setItem(PICKS_KEY, JSON.stringify(ids));
+  // 廣播 storage，讓其它元件（像右下角面板）即時同步
+  window.dispatchEvent(
+    new StorageEvent('storage', { key: PICKS_KEY, newValue: JSON.stringify(ids) })
   );
 }
 
-function Card({ item }: { item: Item }){
-  const picked = hasPick(item.id);
-  return (
-    <div className="bg-white/5 rounded-xl p-3 border border-white/10">
-      <img src={item.poster_url} alt={item.title} className="w-full h-40 object-cover rounded-md mb-2" />
-      <div className="text-sm font-semibold line-clamp-1">{item.title}</div>
-      <div className="text-xs text-white/70 line-clamp-1">{item.artist_or_director} • {item.year}</div>
-      <div className="flex gap-2 mt-3">
-        <a href={item.play_url} target="_blank" className="px-2 py-1 text-xs rounded bg-white/10 hover:bg-white/20">▶ play</a>
-        {picked ? (
-          <button onClick={()=>removePick(item.id)} className="px-2 py-1 text-xs rounded border border-white/30">✓ added</button>
-        ) : (
-          <button onClick={()=>addPick(item.id)} className="px-2 py-1 text-xs rounded bg-neon/20 hover:bg-neon/30">＋ add</button>
-        )}
+export default function ResultsGrid() {
+  const [items, setItems] = useState<Item[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // 收藏 & 只看收藏
+  const [picks, setPicks] = useState<string[]>([]);
+  const [onlyPicks, setOnlyPicks] = useState(false);
+
+  // profile 與隨機 seed
+  const [profile, setProfile] = useState<any>({});
+  const [shuffleSeed, setShuffleSeed] = useState<number | null>(null);
+
+  // ---- 讀資料 ----
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const res = await fetch('/data/items.json', { cache: 'no-store' });
+        const data: Item[] = await res.json();
+        if (!mounted) return;
+        setItems(data);
+      } catch {
+        // ignore
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // ---- 讀取初始 profile / picks 與監聽 storage ----
+  useEffect(() => {
+    try {
+      const p = JSON.parse(localStorage.getItem(PROFILE_KEY) || '{}');
+      setProfile(p);
+      if (!p.decades || p.decades.length === 0) {
+        // I don't care（年代為空）=> 進入隨機模式
+        setShuffleSeed(Date.now());
+      }
+    } catch {}
+
+    setPicks(loadPicks());
+
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === PROFILE_KEY && e.newValue) {
+        try {
+          const p = JSON.parse(e.newValue);
+          setProfile(p);
+          if (!p.decades || p.decades.length === 0) {
+            setShuffleSeed(Date.now());
+          } else {
+            setShuffleSeed(null);
+          }
+        } catch {}
+      }
+      if (e.key === PICKS_KEY && e.newValue) {
+        try {
+          setPicks(JSON.parse(e.newValue));
+        } catch {}
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
+  // ---- 切換收藏 ----
+  function togglePick(id: string) {
+    setPicks((prev) => {
+      const exists = prev.includes(id);
+      const next = exists ? prev.filter((x) => x !== id) : [...prev, id];
+      savePicks(next);
+      return next;
+    });
+  }
+
+  // ---- 套用年代過濾與 I don't care 隨機 ----
+  const viewItems = useMemo(() => {
+    let base = items.slice();
+
+    // 只看收藏
+    if (onlyPicks) {
+      base = base.filter((it) => picks.includes(it.id));
+    }
+
+    // 年代三段過濾（profile.decades 由 PillGate 寫入）
+    const decades: string[] = profile?.decades || [];
+    if (decades.length > 0) {
+      base = base.filter((it) => decades.includes(toDecade(it.year)));
+    }
+
+    // I don't care：年代為空 => 進入隨機排序
+    if (decades.length === 0 && shuffleSeed != null) {
+      base = shuffleWithSeed(base, shuffleSeed);
+    }
+
+    return base;
+  }, [items, picks, onlyPicks, profile, shuffleSeed]);
+
+  if (loading) {
+    return (
+      <div className="py-10 text-center text-white/70">
+        loading tracks…
       </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* 控制列（只看收藏） */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3 text-sm">
+          <label className="inline-flex items-center gap-2 select-none cursor-pointer">
+            <input
+              type="checkbox"
+              className="accent-emerald-400"
+              checked={onlyPicks}
+              onChange={(e) => setOnlyPicks(e.target.checked)}
+            />
+            <span className="text-white/80">only my picks</span>
+          </label>
+          {/* 顯示目前年代條件 */}
+          <span className="text-white/40">
+            {Array.isArray(profile?.decades) && profile.decades.length > 0
+              ? `decades: ${profile.decades.join(', ')}`
+              : 'decades: (random)'}
+          </span>
+        </div>
+      </div>
+
+      {/* Grid */}
+      <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+        {viewItems.map((it) => {
+          const picked = picks.includes(it.id);
+          return (
+            <div
+              key={it.id}
+              className="bg-zinc-900/40 rounded-xl border border-white/10 overflow-hidden"
+            >
+              {/* poster */}
+              {it.poster_url ? (
+                <img
+                  src={it.poster_url}
+                  alt={it.title}
+                  className="w-full aspect-square object-cover"
+                  loading="lazy"
+                />
+              ) : (
+                <div className="w-full aspect-square grid place-items-center bg-zinc-800/40">
+                  <span className="text-white/30 text-sm">no image</span>
+                </div>
+              )}
+
+              {/* meta */}
+              <div className="p-4 space-y-1">
+                <div className="text-white font-medium truncate">{it.title}</div>
+                <div className="text-white/60 text-sm truncate">
+                  {it.artist_or_director || it.type}{' '}
+                  {it.year ? `• ${it.year}` : null}
+                </div>
+                <div className="flex gap-2 pt-3">
+                  {it.play_url && (
+                    <a
+                      href={it.play_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-3 py-1 rounded bg-white/10 hover:bg-white/20 text-sm"
+                    >
+                      ▶ play
+                    </a>
+                  )}
+                  <button
+                    onClick={() => togglePick(it.id)}
+                    className={`px-3 py-1 rounded text-sm ${
+                      picked
+                        ? 'bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/30'
+                        : 'bg-white/10 hover:bg-white/20'
+                    }`}
+                  >
+                    {picked ? '✓ added' : '+ add'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {viewItems.length === 0 && (
+        <div className="py-12 text-center text-white/60">
+          no results. try changing your filters.
+        </div>
+      )}
     </div>
   );
 }
