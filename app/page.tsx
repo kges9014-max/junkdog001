@@ -1,4 +1,5 @@
 'use client';
+import FavesFab from '@/components/FavesFab';
 import { useState } from 'react';
 import PillGate from '@/components/PillGate';
 import ResultsGrid from '@/components/ResultsGrid';
@@ -13,3 +14,4 @@ export default function Page(){
     </main>
   );
 }
+<FavesFab />
